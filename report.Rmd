@@ -1,0 +1,464 @@
+---
+title: "StatComp Project 2: Scottish weather"
+author: "Michelle Cleary (s1979093, michellecleary)"
+output:
+  html_document:
+    number_sections: no
+  pdf_document:
+    number_sections: no
+header-includes:
+  - \newcommand{\bm}[1]{\boldsymbol{#1}}
+  - \newcommand{\mat}[1]{\begin{bmatrix}#1\end{bmatrix}}
+---
+
+```{r setup, include = FALSE}
+# Modify this setup code chunk to set options
+# or add extra packages etc if needed.
+# See the project instructions for more details
+# on what code to show, and where/how.
+
+# Set default code chunk options
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = TRUE
+)
+
+suppressPackageStartupMessages(library(tidyverse))
+theme_set(theme_bw())
+suppressPackageStartupMessages(library(StatCompLab))
+
+# To give the same random number sequence every time the document is knit:ed,
+# making it easier to discuss the specific numbers in the text:
+set.seed(12345L)
+```
+
+```{r code=readLines("functions.R"), eval=TRUE, echo=FALSE}
+# Do not change this code chunk
+# Load function definitions
+source("functions.R")
+```
+
+
+```{r load-data, echo=FALSE}
+# Load the data
+data(ghcnd_stations, package = "StatCompLab")
+data(ghcnd_values, package = "StatCompLab")
+# Create a new variable containing both station data and measurements
+ghcnd <- left_join(ghcnd_values, ghcnd_stations, by = "ID")
+```
+
+```{r remove-temp, echo=FALSE}
+# Remove the temperature values
+ghcnd <-
+  ghcnd %>%
+  filter(Element == "PRCP")
+```
+
+In this report, we will use data from eight weather stations in Scotland, covering the time period from 1 January 1960 to 31 December 2018, to investigate the seasonal variability of precipitation, and to estimate a monthly precipitation model for Scotland. 
+
+# Seasonal variability
+
+First, we will investigate whether precipitation is seasonally varying and how often it rains, separately for each weather station. Let winter be $\{\text{Jan, Feb, Mar, Oct, Nov, Dec}\}$, and let summer be $\{\text{Apr, May, Jun, Jul, Aug, Sep}\}$.
+
+## Is precipitation seasonally varying?
+
+We observe the precipitation behaviour through an exploratory plot of the average monthly precipitation for each of the stations.
+
+```{r average-monthly-prcp, echo=FALSE, fig.width = 9}
+# Plot average monthly precipitation for each station
+ghcnd %>%
+  group_by(ID, Name, Element, Month) %>%
+  summarise(Value = mean(Value), .groups = "drop") %>%
+  ggplot(aes(Month, Value)) +
+  ggtitle("Monthly average precipitation") +
+  ylab("Average precipitation (mm)") +
+  geom_point() +
+  facet_wrap(~Name)
+```
+
+The shapes for the majority of the stations are quite similar, with slightly varying averages and amplitudes, except for Benmore Younger Botanic Gardens and Ardtalnaig. Benmore Younger Botanic Gardens has higher levels of precipitation than the other stations throughout the year. Precipitation is higher in winter months and lower in summer months. Ardtalnaig also appears to follow this trend of seasonal variation. The seasonal effects for the remainder of the stations are not particularly clear from the plot.
+
+```{r add-season-column, echo=FALSE}
+# Create a "Season" column in the dataset
+ghcnd <-
+  ghcnd %>%
+  mutate(Season = if_else(Month %in% c(1, 2, 3, 10, 11, 12), true = "winter", false = "summer"))
+```
+
+In order to investigate whether precipitation is seasonally varying, we will construct a Monte Carlo permutation test for the hypotheses:
+
+$$
+H_0: \text{The rainfall distribution is the same in winter as in summer.} \\
+H_1: \text{The winter and summer distributions have different expected values.}
+$$
+
+Let $Y_W = \{y_1^W,....,y_{N_W}^W \}$ and $Y_S = \{y_1^S,....,y_{N_S}^S \}$ denote the daily precipitation measured by a particular weather station in winter and summer respectively. The distributions of rainfall in winter and summer are denoted by $W, S$ respectively. 
+We first compute the test statistic, $T_0 = \left[\text{winter average} - \text{summer average}\right] = \left[\overline{y.^W} - \overline{y.^S} \right]$, for each weather station, using the `original_test_statistics` function defined in `functions.R`.
+
+```{r original-test-stats, echo=TRUE}
+# Create a vector of the 8 station names
+station_names <- ghcnd %>%
+  group_by(Name) %>%
+  summarise(.groups = "drop")
+station_names <- pull(station_names)
+
+# Compute the test statistic for each station
+original_test_stats <- original_test_statistics(ghcnd, station_names, "average")
+```
+```{r display-original-test-stats, echo = FALSE}
+# Display the test statistics
+original_test_stats_df <- data.frame(t(original_test_stats))
+colnames(original_test_stats_df) <- "T"
+knitr::kable(original_test_stats_df)
+```
+
+Under $H_0$, the joint sample $Y_{W \cup S} = \{y_1^W,....,y_{N_W}^W, y_1^S,....,y_{N_S}^S \}$ is a collection of exchangeable variables. Therefore, each random permutation of $Y_{W \cup S}$ has the same distribution as $Y_{W \cup S}$ under $H_0$. We construct the Monte Carlo permutation test as follows.
+
+For $n = 1,....,N = 10,000$, take $Y_{W \cup S}^{(n)}$ as a random permutation of $Y_{W \cup S}$. Split the result into subsets $Y_W^{(n)}$ and $Y_S^{(n)}$ of size $N_W$ and $N_S$ respectively. Using the `randomisation` function, we compute the test statistic, $T^{(n)}$, of each random permutation, as in `analysis.R`. 
+
+```{r random-stats, echo = FALSE}
+# Read in the test statistics of the random permutations from analysis.R
+random_test_stats <- readRDS(file = "data/random_test_stats_average.rds")
+```
+
+Next, we compute an estimate of the p-value,
+$$
+\hat{p} = \frac{1}{N}\sum_{n=1}^{N} \mathbb{I}(T^{(n)} \geq T_0) = \frac{1}{10000}\sum_{n=1}^{10000} \mathbb{I}(T^{(n)} \geq T_0).
+$$
+Repeating this procedure for each weather station separately, we find the following p-value estimates.
+
+```{r p-values, echo = TRUE}
+# Compute the p-value estimates for each station
+p_value_estimates <- random_test_stats %>%
+  summarise(
+    ARDTALNAIG = mean(ARDTALNAIG > original_test_stats$ARDTALNAIG),
+    BALMORAL = mean(BALMORAL > original_test_stats$BALMORAL),
+    `BENMORE: YOUNGER BOTANIC GARDE` = mean(`BENMORE: YOUNGER BOTANIC GARDE` > original_test_stats$`BENMORE: YOUNGER BOTANIC GARDE`),
+    BRAEMAR = mean(BRAEMAR > original_test_stats$BRAEMAR),
+    `EDINBURGH: ROYAL BOTANIC GARDE` = mean(`EDINBURGH: ROYAL BOTANIC GARDE` > original_test_stats$`EDINBURGH: ROYAL BOTANIC GARDE`),
+    FASKALLY = mean(FASKALLY > original_test_stats$FASKALLY),
+    LEUCHARS = mean(LEUCHARS > original_test_stats$LEUCHARS),
+    PENICUIK = mean(PENICUIK > original_test_stats$PENICUIK)
+  )
+```
+```{r display-p-values, echo = FALSE}
+# Display the p-value estimates
+p_value_estimates <- data.frame(t(p_value_estimates))
+colnames(p_value_estimates) <- "$\\hat{p}$"
+knitr::kable(p_value_estimates)
+```
+
+Finally, we construct an approximate $95\%$ confidence interval for each p-value estimate in order to compute their respective Monte Carlo standard deviations. Let $x$ denote the number of times we observe a randomised test statistic as extreme as, or more extreme than, the observed test statistic, i.e. $x = \mathbb{I}(T^{(n)} \geq T_0)$. 
+When the observed count is $x=0$, and so $\hat{p}=0$, we can construct an exact confidence interval for $p$ as
+
+$$
+CI_p = (0, 1-0.025^{1/N}) = (0, 1 - 0.025^{1/10000}).
+$$
+
+When $x>0$, we can construct an approximate $95\%$ confidence interval for $p$ as
+
+$$
+CI_p = \hat{p} \pm z_{0.975} \sqrt{\frac{\hat{p}(1-\hat{p})}{N}} = \frac{x}{N} \pm \sqrt{\frac{x(N-x)}{N^3}} = \frac{x}{10000} \pm \sqrt{\frac{x(10000-x)}{1 \times 10^{12}}}.
+$$
+
+Constructing a confidence interval for $p$ for each weather station by applying the `p_value_conf_int` function, which uses the appropriate method, we compute their respective Monte Carlo standard deviations as displayed below.
+
+```{r confidence-intervals, echo = TRUE}
+# Create a suitable dataframe to store the confidence intervals
+confidence_intervals <- df(8, 2)
+colnames(confidence_intervals) <- c("Lower", "Upper")
+rownames(confidence_intervals) <- station_names
+# Compute the Monte Carlo standard deviation confidence intervals for each station
+for (i in seq_len(8)) {
+  confidence_intervals[i, ] <- p_value_conf_int(p_value_estimates[i, ], N = 10000)
+}
+```
+```{r display-confidence-intervals, echo = FALSE}
+# Display the confidence intervals
+knitr::kable(confidence_intervals)
+```
+
+For the weather stations in Ardtalnaig, Balmoral, Benmore: Younger Botanic Gardens, Braemar, Faskally, and Penicuik, the p-values are statistically significant, even at the $1\%$ level of significance, all with confidence intervals of $(0, 0.0003688)$. Therefore, we reject the null hypothesis, that the rainfall distribution is the same in winter as in summer, for these stations. The confidence interval for Leuchars, $(0.0253331,	0.0318669)$, suggests that the p-value is statistically significant at the $5\%$ level of significance, which, given the large number of permutation tests carried out, leads us to also reject the null hypothesis for this station. With a confidence interval of $(0.6463874,	0.6650126)$, the p-value for Edinburgh: Royal Botanic Garden is not statistically significant and indicates strong evidence in support of $H_0$. Therefore, we fail to reject the null hypothesis for this station. 
+
+These results indicate that there is not seasonal variation with regards to precipitation at Edinburgh: Royal Botanic Garden, but that rainfall is seasonally varying at all other weather stations.
+
+
+## How often does it rain?
+
+We observe the precipitation behaviour through an exploratory plot of the average monthly proportion of days when rainfall occurs for each station.
+
+```{r average-prop-prcp, echo=FALSE, fig.width = 9}
+# Plot the average monthly proportion of rainy days for each station
+ghcnd %>%
+  group_by(Name, Element, Day, Month, Season) %>%
+  # Count the number of days with rain
+  count(Value > 0) %>%
+  # Create a new column showing the proportion of rainy days
+  mutate(ProportionRainy = ifelse(`Value > 0` == TRUE, yes = n / sum(n), no = 0)) %>%
+  group_by(Name, Month, Season) %>%
+  # Compute the average monthly proportion of rainy days for each station
+  summarise(ProportionRainy = mean(ProportionRainy), .groups = "drop") %>%
+  ggplot(aes(Month, ProportionRainy, fill = Season)) +
+  ggtitle("Average monthly proportion of rainy days") +
+  ylab("Average proportion of days with rain") +
+  geom_bar(stat = "identity") +
+  facet_wrap(~Name)
+```
+
+The shapes for all of the stations are quite similar, with slightly varying averages and amplitudes. It appears that the proportion of days with rainfall each month is slightly higher in winter months than summer. This suggests that the daily probability of rainfall may be slightly higher in winter than in summer. However, the size and significance of this seasonal variation is not particularly clear from the plot.
+
+We now investigate how often it rains by constructing a Monte Carlo permutation test for the hypotheses:
+
+$$
+H_0: \text{The daily probability of rainfall is the same in winter as in summer.} \\
+H_1: \text{The daily probability of rainfall is different in winter and in summer.}
+$$
+
+Again, let $Y_W = \{y_1^W,....,y_{N_W}^W \}$ and $Y_S = \{y_1^S,....,y_{N_S}^S \}$ denote the daily precipitation measured by a particular weather station in winter and summer respectively. 
+The test statistic is defined as
+$$
+\begin{aligned}
+T_0 &= [\text{winter empirical non-zero proportion} - \text{summer empirical non-zero proportion}] \\
+&= \left[\frac{1}{N_W}\sum_{j=1}^{N_W}\mathbb{I}(y_j^W \ne 0) - \frac{1}{N_S}\sum_{j=1}^{N_S}\mathbb{I}(y_j^S \ne 0) \right].
+\end{aligned}
+$$ 
+
+We use the `original_test_statistics` function to compute the test statistic for each weather station.
+
+```{r original-test-stats-prob, echo = TRUE}
+# Compute the test statistic for each station
+original_test_stats_prob <- original_test_statistics(ghcnd, station_names, "prob")
+```
+```{r display-original-test-stats-prob, echo = FALSE}
+# Display the test statistics
+original_test_stats_prob_df <- data.frame(t(original_test_stats_prob))
+colnames(original_test_stats_prob_df) <- "T"
+knitr::kable(original_test_stats_prob_df)
+```
+
+We construct the Monte Carlo permutation test as follows. For $n = 1,....,N = 10,000$, take $Y_{W \cup S}^{(n)}$ as a random permutation of $Y_{W \cup S}$. Split the result into subsets $Y_W^{(n)}$ and $Y_S^{(n)}$ of size $N_W$ and $N_S$ respectively. We compute the test statistic, $T^{(n)}$, each random permutation using the `randomisation` function, as in `analysis.R`. 
+
+```{r random-stats-prob, echo = FALSE}
+# Read in the test statistics of the random permutations from analysis.R
+random_test_stats_prob <- readRDS(file = "data/random_test_stats_prob.rds")
+```
+
+Next, we compute an estimate of the p-value,
+$$
+\hat{p} = \frac{1}{N}\sum_{n=1}^{N} \mathbb{I}(T^{(n)} \geq T_0) = \frac{1}{10000}\sum_{n=1}^{10000} \mathbb{I}(T^{(n)} \geq T_0).
+$$
+Repeating this procedure for each weather station separately, we find the following p-value estimates.
+
+```{r p-values-prob, echo = TRUE}
+# Compute the p-value estimates for each station
+p_values_prob <- random_test_stats_prob %>%
+  summarise(
+    ARDTALNAIG = mean(ARDTALNAIG > original_test_stats_prob$ARDTALNAIG),
+    BALMORAL = mean(BALMORAL > original_test_stats_prob$BALMORAL),
+    `BENMORE: YOUNGER BOTANIC GARDE` = mean(`BENMORE: YOUNGER BOTANIC GARDE` > original_test_stats_prob$`BENMORE: YOUNGER BOTANIC GARDE`),
+    BRAEMAR = mean(BRAEMAR > original_test_stats_prob$BRAEMAR),
+    `EDINBURGH: ROYAL BOTANIC GARDE` = mean(`EDINBURGH: ROYAL BOTANIC GARDE` > original_test_stats_prob$`EDINBURGH: ROYAL BOTANIC GARDE`),
+    FASKALLY = mean(FASKALLY > original_test_stats_prob$FASKALLY),
+    LEUCHARS = mean(LEUCHARS > original_test_stats_prob$LEUCHARS),
+    PENICUIK = mean(PENICUIK > original_test_stats_prob$PENICUIK)
+  )
+```
+```{r display-p-values-prob, echo = FALSE}
+# Display the p-value estimates
+p_values_prob <- data.frame(t(p_values_prob))
+colnames(p_values_prob) <- "$\\hat{p}$"
+knitr::kable(p_values_prob)
+```
+
+Finally, we construct an approximate $95\%$ confidence interval for each p-value estimate in order to compute their respective Monte Carlo standard deviations. Let $x$ denote the number of times we observe a randomised test statistic as extreme as, or more extreme than, the observed test statistic, i.e. $x = \mathbb{I}(T^{(n)} \geq T_0)$. 
+Since the observed count is $x=0$ for every weather station, we can construct an exact confidence interval for $p$ for each station as
+
+$$
+CI_p = (0, 1-0.025^{1/N}) = (0, 1 - 0.025^{1/10000}).
+$$
+Using the `p_value_conf_int` function, we compute the Monte Carlo standard deviations.
+
+```{r confidence-intervals-prob, echo = TRUE}
+# Create a suitable dataframe to store the confidence intervals
+confidence_intervals_prob <- df(8, 2)
+colnames(confidence_intervals_prob) <- c("Lower", "Upper")
+rownames(confidence_intervals_prob) <- station_names
+# Compute the Monte Carlo standard deviation confidence intervals for each station
+for (i in seq_len(8)) {
+  confidence_intervals_prob[i, ] <- p_value_conf_int(p_values_prob[i, ], N = 10000)
+}
+```
+```{r display-confidence-intervals-prob, echo = FALSE}
+# Display the confidence intervals
+knitr::kable(confidence_intervals_prob)
+```
+
+The p-values are statistically significant, even at the $1\%$ level of significance, with confidence intervals of $(0, 0.0003688)$ for each weather station. Therefore, we reject the null hypothesis, that the daily probability of rainfall is the same in winter as in summer, for every station. 
+
+With regards to the Edinburgh: Royal Botanic Garden station, this is surprising, as our previous results suggested that precipitation is not seasonally varying here. However, for the remainder of the stations, these results support our conclusions from the previous section, that precipitation is seasonal varying. We will further explore the size of this variation in the next section.
+
+# Spatial weather prediction
+
+In this section, we will define and estimate a monthly precipitation model for Scotland, and then assess how well the model is able to predict precipitation at new locations.
+
+```{r monthly-prcp, echo = FALSE, fig.width = 9}
+# Construct a version of the dataset with monthly averaged precipitation values,
+# also aggregating DecYear
+ghcnd_average <- ghcnd %>%
+  group_by(Name, Element, Month, Year, Season, Latitude, Longitude, Elevation) %>%
+  summarise(Value = mean(Value), AverageDecYear = mean(DecYear), .groups = "drop")
+```
+
+
+## Estimation and prediction
+
+We define a monthly precipitation model for Scotland as
+$$
+y_i = \sum_{k=0}^6\beta_kx_{i,k} + e_i = \beta_0 + \beta_1x_{i,1} + \beta_2x_{i,2} +\beta_3x_{i,3} +\beta_4x_{i,4} + \beta_5x_{i,5} + e_i + \beta_6x_{i,6} + e_i
+$$
+where $y_i$ are the square root of the observed precipitation values. Since the precipitation data is very obviously non-Gaussian, even on the monthly average scale, the constant variance assumption of the basic `lm()` model is not suited to the data. This is improved by working with the square root of the monthly averages, rather than the actual values. $x_{i,j}$, $j=1,....,6$, are covariates, and $e_i$ are observation noise components.
+
+$x_1, x_2$ represent the spatial coordinates, latitude and longitude respectively, while elevation is expressed by the $x_3$ covariate. We include spatial coordinates and elevation as covariates in our model as we would expect these variables to influence levels of precipitation in a given area. For example, higher altitudes may result in more frequent rainfall, while distance from the equator and the poles may also affect precipitation levels.
+
+$x_4$ is a long-term climate trend covariate, defined by the value of `AverageDecYear`, the average of the `DecYear` variable per month for each year. We include this covariate as climate change and global warming may have gradually influenced the amount of precipitation over the years.
+
+Finally, $x_5, x_6$ are given by $\cos(2\pi$`AverageDecYear`$)$ and $\sin(2\pi$`AverageDecYear`$)$, respectively. These functions are used as they are suitable to capture the wave shape of the seasonal variability of precipitation.
+
+We use the `lm` function to estimate the coefficients of the model, $\boldsymbol{\beta} = [\beta_0, \beta_1,....,\beta_6]$.
+
+```{r model-estimation, echo = TRUE}
+# Estimate the model
+model <- lm(sqrt(Value) ~ Latitude + Longitude + Elevation + AverageDecYear + cos(2 * pi * AverageDecYear) + sin(2 * pi * AverageDecYear), data = ghcnd_average)
+```
+```{r model-details, echo = FALSE}
+# Display the model summary
+model_summary <- data.frame(summary(model)$coefficients)
+model_summary <- select(model_summary, Estimate)
+rownames(model_summary)[6] <- "$\\cos(2\\pi$AverageDecYear)"
+rownames(model_summary)[7] <- "$\\sin(2\\pi$AverageDecYear)"
+colnames(model_summary)[1] <- "Estimate ($\\boldsymbol{\\beta}$)"
+knitr::kable(model_summary)
+```
+
+The coefficient for the latitude covariate, $\beta_1 = -0.1349611$, suggests that precipitation decreases as latitude increases, i.e. as you move farther north. The longitude values in our dataset are all negative, so $\beta_2 = -0.5466656$, the coefficent for longitude, indicates that precipitation increases as longitude increases, i.e. as you move farther east. 
+
+$\beta_3 = 0.0004040$ suggests that precipitation increases slightly as elevation increases. The coefficient for the long-term climate trend covariate, $\beta_4 = 0.0023757$, indicates that precipitation increases as we move forward in time. 
+
+Finally, $\beta_5 = 0.1828141, \beta_6 = -0.1320307$ demonstrate that precipitation is seasonally varying, and these coefficients illustrate this variation.
+
+## Assessment
+
+We assess the model's ability to predict precipitation at new locations. 
+
+First, we construct a stratified cross-validation that groups the data by weather station, leaving one out. It estimates a model using the remaining 7 stations, and then uses this model to predict precipitation values for the left-out station. It then computes prediction scores for the left-out station, aggregated to the 12 months of the year. It assesses both the Squared Error and Dawid-Sebastiani scores. Let $F$ denote the prediction, and $y$ denote the actual precipitation value. The Squared Error (SE) score is defined as,
+$$
+S_{SE}(F, y) = (y - \hat{y}_F)^2, 
+$$
+
+where $\hat{y}_F$ is a point estimate under $F$ - in this case, the prediction mean, $\mu _F$. The Dawid-Sebastiani (DS) score is defined as,
+
+$$
+S_{DS}(F, y) = \frac{(y - \mu _F)^2}{\sigma ^2_F} + \log(\sigma ^2_F).
+$$
+
+Using the `leave_station_out` function defined in `functions.R`, this process is repeated for each station, in order to assess the model's spatial predictive ability. 
+
+```{r cross-validation, echo = TRUE}
+data_with_scores <- leave_station_out(ghcnd_average, stations = station_names)
+```
+
+We first assess the scores for each station.
+
+```{r score-by-station, echo = FALSE, fig.width = 9}
+data_with_scores %>%
+  ggplot() +
+  geom_point(aes(Value, se, colour = "Squared Error"), alpha = 0.5) +
+  geom_point(aes(Value, ds, colour = "Dawid-Sebastiani"), alpha = 0.5) +
+  xlab("Precipitation (mm)") +
+  ylab("Score") +
+  ggtitle("Score vs precipitation by station") +
+  facet_wrap(~Name)
+```
+
+As the true amount of precipitation increases, both scores also increase. It appears that the Squared Error scores are lower than the Dawid-Sebastiani scores for all stations. 
+
+The model seems to accurately predict precipitation levels between approximately $0-2.5\text{mm}$, with both scores staying close to $0$. The model also seems to relatively accurately predict higher amounts of precipitation, $2.5-10\text{mm}$. All stations have SE scores below $100$. Balmoral, Edinburgh: Royal Botanic Garden, Leuchars, and Penicuik have $DS$ scores below $250$. It performs slightly worse for Braemar, Faskally, and Ardtalnaig, which both have an outlying $DS$ scores less than $260$, while Ardtalnaig has a number of outliers in the range $250-400$. Benmore: Younger Botanic Garden has a dense cluster of $DS$ scores in this range. 
+
+As precipitation levels increase from $10\text{mm}$, the accuracy of the model rapidly declines. These high amounts only occur at Ardtalnaig, Benmore: Younger Botanic Garden, and once at Braemar. With regards to the occurrence at Braemar, where precipitation was slightly above $10\text{mm}$, the SE score remains below $100$, while the DS score is below $350$. The SE scores for Ardtalnaig, where precipitation is less than $15\text{mm}$, are all below $250$, while the DS scores range from approximately $250-800$. For precipitation between $10-15\text{mm}$, the scores for Benmore: Younger Botanic Garden are similar to those for Ardtalnaig, with SE scores below $250$, and DS scores in the range $250-1000$. For precipitation levels above $15\text{mm}$, the model becomes even more inaccurate, with SE scores reaching $\approx 260$, and DS scores in the range $900-1500$.
+
+We investigate this further by examining the overall cross-validated average scores for each station.
+
+```{r average-score-by-station, echo = TRUE}
+average_by_station <- data_with_scores %>%
+  group_by(Name) %>%
+  summarise(se = mean(se), ds = mean(ds))
+```
+```{r display-average-by-station, echo = FALSE}
+colnames(average_by_station) <- c("Name", "Squared Error", "Dawid-Sebastiani")
+knitr::kable(average_by_station)
+```
+
+These average scores support our previous observations. Overall, the model appears to accurately predict precipitation at Balmoral, Braemar, Edinburgh: Royal Botanic Garden, Faskally, Leuchars, and Penicuik, all with average SE scores less than $3$ and average DS scores less than $12$. The model is less accurate for Ardtalnaig, and extremely inaccurate for Benmore: Younger Botanic Garden. 
+
+Next, we assess the scores for each month.
+
+```{r score-by-month, echo = FALSE, fig.width = 9}
+data_with_scores %>%
+  ggplot() +
+  geom_point(aes(Value, se, colour = "Squared Error"), alpha = 0.5) +
+  geom_point(aes(Value, ds, colour = "Dawid-Sebastiani"), alpha = 0.5) +
+  xlab("Precipitation (mm)") +
+  ylab("Score") +
+  ggtitle("Score vs precipitation by month") +
+  facet_wrap(~Month)
+```
+
+Again, as level of precipitation increase, the scores also increase, with SE being lower than DS for all months. The model appears to more accurately predict rainfall in the summer months than the winter months, due to smaller amounts of preicipitation. This supports our assumption that precipitation is seasonally varying. However, it suggests that the $\cos$ and $\sin$ functions chosen to represent this variation in the model may not be the most suitable. 
+
+We further explore this by examining the overall cross-validated average scores for each month.
+
+```{r average-score-by-month, echo = TRUE}
+average_by_month <- data_with_scores %>%
+  group_by(Month) %>%
+  summarise(se = mean(se), ds = mean(ds))
+```
+```{r display-average-by-month, echo = FALSE}
+colnames(average_by_month) <- c("Month", "Squared Error", "Dawid-Sebastiani")
+knitr::kable(average_by_month)
+```
+
+These average scores support our previous observations. Overall, the model appears to accurately predict precipitation during summer, with these months having average SE scores in the range $2-8$, and average DS scores from $9-35$. The model is far less accurate during the winter months which have average SE scores from $5-15$, and average DS scores ranging from $30-73$. 
+
+We investigate this further by examining the overall cross-validated average scores for each season.
+
+
+```{r average-score-by-season, echo = TRUE}
+average_by_season <- data_with_scores %>%
+  group_by(Season) %>%
+  summarise(se = mean(se), ds = mean(ds))
+```
+```{r display-average-by-season, echo = FALSE}
+colnames(average_by_season) <- c("Season", "Squared Error", "Dawid-Sebastiani")
+knitr::kable(average_by_season)
+```
+
+These results provide further evidence that overall, the model prediction accuracy is far higher in summer than in winter.
+
+
+# Conclusion
+In conclusion, the results of our initial analysis support that precipitation is seasonally varying, and that the daily probability of rain is not the same in summer and winter. Upon defining, estimating, and assessing a monthly precipitation model for Scotland, we found this variation to be quite large. As precipitation amounts increased, the accuracy of our model decreased. The model had more accurate precipitation predictions for summer months, which have lower amounts of rainfall, than winter months. Overall, the model is relatively accurate for all of the stations except Ardtalnaig and Benmore: Younger Botanic Garden. This is not surprising, as these stations have more frequent occurrences of high levels of precipitation. Precipitation in these areas also does not appear to follow the same shape as the others, as noted in the beginning of this report.
+
+# Code appendix
+
+
+## Function definitions
+
+```{r code=readLines("functions.R"), eval=FALSE, echo=TRUE}
+# Do not change this code chunk
+```
+
+## Analysis code
+
+```{r code=readLines("analysis.R"), eval=FALSE, echo=TRUE}
+# Do not change this code chunk
+```
